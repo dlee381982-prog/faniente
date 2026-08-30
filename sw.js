@@ -1,6 +1,6 @@
 // Precache the whole game on first visit, then serve it from the cache.
 // VERSION is the hash of the html: a new build is a new cache, and the old one is deleted.
-const VERSION = "faniente-452544f3130f";
+const VERSION = "faniente-990239b59cc2";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 

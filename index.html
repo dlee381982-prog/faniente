@@ -21,8 +21,8 @@
   /* David, 28 Aug: the hand was the biggest thing on the screen again. It comes down about a
      fifth from the reference's 72x92, and the room goes to the table. */
   :root{
-    --cw:  clamp(34px, 6.9dvh, 58px);   /* hand card */
-    --ch:  clamp(44px, 8.8dvh, 74px);
+    --cw:  clamp(32px, 6.0dvh, 51px);   /* hand card — sized so two rows fit WITHOUT overlap */
+    --ch:  clamp(41px, 7.7dvh, 65px);
     --sx:  min(180px, 38vw);            /* sweep distance */
     --sy:  min(190px, 21dvh);
   }
@@ -168,7 +168,12 @@
 
   /* David, 28 Aug: leading an ace off-trump deserves a shout. It hangs beside the face that
      did it and clears itself; the tail points back at the avatar. */
-  .seat .shout{position:absolute;z-index:8;white-space:nowrap;
+  /* David, 2 Sep: "when a text bubble comes up, I don't want it to be hidden underneath the
+     cards." It was, and z-index alone could not fix it: .seat.left/.right carry a transform,
+     and a transform CREATES A STACKING CONTEXT, so the bubble's z-index was trapped inside
+     its own seat and could never climb past the hand. The seat itself has to be lifted. */
+  .seat:has(.shout){z-index:60}
+  .seat .shout{position:absolute;z-index:61;white-space:nowrap;
     background:#fff;color:#12305c;font-weight:800;font-size:15px;letter-spacing:.01em;
     padding:7px 13px;border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,.6);
     animation:shout 3.3s cubic-bezier(.2,1.5,.5,1) forwards}
@@ -231,8 +236,10 @@
     flex:0 0 auto;display:flex;flex-direction:column;gap:clamp(4px,.9dvh,8px);
     align-items:center}
   .handrow{display:flex;gap:clamp(4px,1.4vw,8px);justify-content:center;position:relative}
-  /* the back row tucks under the front one — Setolisis's 92px card on a 76px row pitch */
-  .handrow + .handrow{margin-top:calc(var(--ch) * -.17)}
+  /* David, 2 Sep: "You have overlap between cards, which shouldn't be the case." The back
+     row used to tuck under the front by 17% of a card height to buy vertical room. It is now
+     a real gap, and the card is sized down to pay for it, so nothing ever covers anything. */
+  .handrow + .handrow{margin-top:clamp(3px,.7dvh,7px)}
   .card{position:relative;width:var(--cw);height:var(--ch);border-radius:8px;
     border:1px solid #cdd4dc;
     background:linear-gradient(180deg,#fff,#e9edf2);color:#14202e;padding:0;
@@ -263,12 +270,18 @@
   @keyframes sweepNone {to{transform:scale(.75);opacity:.1}}
 
   /* discard swap: face-down cards out, then new ones in */
-  .swap{display:flex;gap:2px;align-items:center;justify-content:center;height:100%}
-  .swap .back{width:12px;height:34px;border-radius:3px;
+  /* the redraw: real cards, one at a time. Wide enough to read, overlapped only slightly so
+     a five-card draw still fits the slot -- David, 2 Sep. */
+  .swap{display:flex;gap:1px;align-items:center;justify-content:center;height:100%}
+  .swap .card.mini{width:calc(var(--mw)*.82);height:calc(var(--mh)*.82);
+    box-shadow:0 2px 6px rgba(0,0,0,.5);margin:0 -2px}
+  .swap .card.mini .r{font-size:calc(var(--mw)*.38)}
+  .swap .card.mini .s{font-size:calc(var(--mw)*.30)}
+  .swap .back{width:calc(var(--mw)*.72);height:calc(var(--mh)*.82);border-radius:4px;
     background:repeating-linear-gradient(45deg,#1d4e89,#1d4e89 3px,#163c69 3px,#163c69 6px);
     border:1px solid rgba(255,255,255,.22)}
-  .swap.out .back{animation:flyOut .78s ease-in forwards}
-  .swap.in  .back{animation:flyIn .86s ease-out backwards}
+  .swap.out .dealt{animation:flyOut .70s ease-in forwards}
+  .swap.in  .dealt{animation:flyIn .62s cubic-bezier(.2,1.3,.45,1) backwards}
   @keyframes flyOut{to{opacity:0;transform:translateY(-26px) rotate(12deg)}}
   @keyframes flyIn{from{opacity:0;transform:translateY(26px) scale(.7)}
                    to{opacity:1;transform:none}}
@@ -437,7 +450,7 @@
     .starthint{margin-top:8px}
     /* the hand has half the width but all the height it needs — cards come off dvh, which
        is small sideways, so they are re-cut against the short axis here */
-    :root{--cw:clamp(32px,12.5dvh,50px);--ch:clamp(42px,16.5dvh,66px)}
+    :root{--cw:clamp(30px,11.0dvh,44px);--ch:clamp(39px,14.6dvh,58px)}
     /* sideways the table owns a whole column — let the diamond use it */
     .diamond{max-width:480px}
   }
@@ -698,6 +711,10 @@
   }
 
   // src/ai/bidding.ts
+  var MIN_RAISE = (() => {
+    const v = typeof process !== "undefined" && process.env ? process.env.FN_BID_MIN : undefined;
+    return v === undefined || v === "" ? false : v !== "0";
+  })();
   function needsAggression(ctx) {
     const [us, them] = ctx.team === 0 ? ctx.scores : [ctx.scores[1], ctx.scores[0]];
     if (them - us >= 7)
@@ -767,6 +784,22 @@
     const groups = bySuit(hand);
     return SUITS.some((suit) => groups[suit].length >= 5 && hand.some((c) => c.rank === 1 && c.suit !== suit));
   }
+  var BID_BOOST = Number(typeof process !== "undefined" && process.env?.FN_BID_BOOST || 0);
+  var envN = (k, d) => {
+    const v = typeof process !== "undefined" && process.env ? process.env[k] : undefined;
+    return v === undefined || v === "" ? d : Number(v);
+  };
+  var BID = {
+    a3: envN("FN_B_A3", 5),
+    a2strong: envN("FN_B_A2S", 3),
+    a2: envN("FN_B_A2", 3),
+    a1deep: envN("FN_B_A1D", 4),
+    a1: envN("FN_B_A1", 3),
+    a0long6: envN("FN_B_A0L6", 4),
+    a0long5: envN("FN_B_A0L5", 4),
+    a0two: envN("FN_B_A0T", 3),
+    a0: envN("FN_B_A0", 1)
+  };
   function maxWilling(hand, ctx) {
     const dir = bestSuit(hand).dir;
     const a = aceCount(hand);
@@ -774,13 +807,13 @@
     const longest = Math.max(...SUITS.map((s) => groups[s].length));
     const aggro = needsAggression(ctx);
     if (a >= 3)
-      return 5;
+      return BID.a3;
     if (a === 2) {
       if (hasStrongSuit(hand, dir))
-        return 4;
+        return BID.a2strong;
       if (aggro && (hasSuitedPower(hand, dir) || nearDominantRun(hand, dir)))
-        return 4;
-      return 3;
+        return BID.a2strong;
+      return BID.a2;
     }
     if (a === 1) {
       const deep = SUITS.some((suit) => {
@@ -792,21 +825,21 @@
         return cs.length >= 4 && tops >= 1 || wides >= 3 || cs.length >= 5;
       });
       if (deep)
-        return 4;
+        return BID.a1deep;
       if (aggro && (nearDominantRun(hand, dir) || longSuitOutsideAce(hand)))
-        return 4;
+        return BID.a1deep;
       if (longest >= 6)
-        return 4;
-      return 3;
+        return BID.a1deep;
+      return BID.a1;
     }
     if (longest >= 6)
-      return 4;
+      return BID.a0long6;
     if (longest >= 5)
-      return 3;
+      return BID.a0long5;
     const twoPowerSameSuit = SUITS.some((s) => groups[s].filter((c) => isWidePower(c.rank, dir)).length >= 2);
     if (twoPowerSameSuit)
-      return 2;
-    return strength(hand) >= 3 ? 3 : 1;
+      return BID.a0two;
+    return strength(hand) >= 3 ? BID.a0long5 : BID.a0;
   }
   function openingSignal(hand) {
     const dir = bestSuit(hand).dir;
@@ -831,7 +864,7 @@
   function decideBid(hand, ctx) {
     if (ctx.forced)
       return 1;
-    let max = maxWilling(hand, ctx);
+    let max = maxWilling(hand, ctx) + BID_BOOST;
     const a = aceCount(hand);
     const groups = bySuit(hand);
     const late = ctx.position >= 2;
@@ -844,6 +877,14 @@
       return null;
     if (ctx.position === 3) {
       return max > ctx.highest ? ctx.highest + 1 : null;
+    }
+    if (MIN_RAISE) {
+      const open2 = openingSignal(hand);
+      const wants = max >= 4 || open2 > 0 || late && a >= 1;
+      if (!wants)
+        return null;
+      const bid = Math.max(1, ctx.highest + 1);
+      return bid <= max ? bid : null;
     }
     if (max >= 4 && ctx.highest <= 3)
       return Math.max(4, ctx.highest + 1);
@@ -926,6 +967,37 @@
   }
 
   // src/ai/play.ts
+  var envN2 = (k, d) => {
+    const v = typeof process !== "undefined" && process.env ? process.env[k] : undefined;
+    return v === undefined || v === "" ? d : Number(v);
+  };
+  var TUNE = {
+    parityUs: envN2("FN_PAR_US", 0),
+    parityThem: envN2("FN_PAR_THEM", 0),
+    honour: envN2("FN_HONOUR", 20),
+    honourOne: envN2("FN_HONOUR1", 0),
+    honourDist: envN2("FN_HDIST", 1),
+    honourEvenOnly: envN2("FN_HEVEN", 0),
+    beatenTie: envN2("FN_BTIE", 0),
+    seatRisk: envN2("FN_SEATRISK", 4),
+    leadLength: envN2("FN_LEADLEN", 48),
+    earlyOnly: envN2("FN_HEARLY", 1),
+    liveScale: envN2("FN_LIVE", 0)
+  };
+  var LEGACY = {
+    parityUs: 0,
+    parityThem: 0,
+    honour: 0,
+    honourOne: 0,
+    honourDist: 0,
+    honourEvenOnly: 0,
+    beatenTie: 0,
+    seatRisk: 0,
+    leadLength: 0,
+    earlyOnly: 0,
+    liveScale: 0
+  };
+
   class Memory {
     seen = new Set;
     static key(c) {
@@ -953,6 +1025,21 @@
           return false;
       }
       return true;
+    }
+    strongerUnseen(c, dir, hand) {
+      const ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+      const mine = new Set(hand.map((x) => Memory.key(x)));
+      let n = 0;
+      for (const r of ranks) {
+        if (r === c.rank)
+          continue;
+        if (distanceFromAce(r, dir) >= distanceFromAce(c.rank, dir))
+          continue;
+        const k = `${c.suit}${r}`;
+        if (!this.seen.has(k) && !mine.has(k))
+          n++;
+      }
+      return n;
     }
     trumpPlayed(trump) {
       if (!trump)
@@ -985,6 +1072,7 @@
     return { seat, value };
   }
   function scoreCard(c, legal, ctx) {
+    const W = ctx.w ?? TUNE;
     const v = ctx.view;
     const call = v.call;
     const dir = call.direction;
@@ -1010,6 +1098,29 @@
       }
       if (highestLeft)
         s += 20;
+      const beaters = ctx.memory.strongerUnseen(c, dir, hand);
+      const cardsOut = 3 * (7 - (v.trickNo + (v.trick.some((p) => p.seat === v.seat) ? 1 : 0)));
+      const unseenTotal = 52 - hand.length - v.history.length * 4 - v.trick.length;
+      const liveP = W.liveScale ? Math.min(1, Math.max(0, cardsOut / Math.max(1, unseenTotal))) : 1;
+      if (beaters > 0 && W.beatenTie)
+        s -= power(c.rank, dir) / 10 * W.beatenTie;
+      const honourApplies = !W.earlyOnly || trickNo <= W.earlyOnly;
+      if (honourApplies && beaters > 0 && c.rank !== 1 && (!W.honourEvenOnly || isEven(c))) {
+        const dist = distanceFromAce(c.rank, dir);
+        if (dist <= W.honourDist) {
+          const expense = 4 - dist;
+          s -= expense * W.honour * liveP;
+          if (beaters === 1)
+            s -= W.honourOne * liveP;
+        }
+      }
+      if (W.leadLength && !isTrump) {
+        s += W.leadLength * (hand.filter((x) => x.suit === c.suit).length - 1);
+      }
+      if (ctx.ours)
+        s += isEven(c) ? W.parityUs : -W.parityUs * 0.75;
+      else
+        s += isEven(c) ? -W.parityThem * 0.8 : W.parityThem;
       if (isTrump) {
         if (!ctx.isBidWinner) {
           s -= 30;
@@ -1068,9 +1179,14 @@
     }
     if (canWin) {
       s += 50;
+      const behind = 3 - v.trick.length;
+      if (W.seatRisk && behind > 0) {
+        const d = Math.min(distanceFromAce(c.rank, dir), 7);
+        s -= W.seatRisk * behind * Math.max(0, 4 - d);
+      }
       if (lastToPlay) {
         s -= power(c.rank, dir) / 3;
-        s += 35 - distanceFromAce(c.rank, dir) * -2;
+        s += 35 + Math.min(distanceFromAce(c.rank, dir), 7) * 2;
       }
       if (!trickHasEven && isEven(c))
         s += 40;
@@ -1123,6 +1239,19 @@
 
   // src/ai/expert.ts
   var BID_MARGIN = Number(typeof process !== "undefined" && process.env?.FN_BID_MARGIN || 0);
+  var SEARCH_BID = (() => {
+    const v = typeof process !== "undefined" && process.env?.FN_SEARCH_BID;
+    return v === undefined || v === "" ? false : v !== "0";
+  })();
+  var SEARCH_CALL = (() => {
+    const v = typeof process !== "undefined" ? process.env?.FN_SEARCH_CALL : undefined;
+    return v === undefined || v === "" ? false : v !== "0";
+  })();
+  var PRIOR = Number((typeof process !== "undefined" && process.env?.FN_PRIOR) ?? "") || 0.6;
+  var INFER = (() => {
+    const v = typeof process !== "undefined" ? process.env?.FN_INFER : undefined;
+    return v === undefined || v === "" ? 0.5 : Number(v);
+  })();
   var key = (c) => `${c.suit}${c.rank}`;
   var rotate = (seat, n = 1) => (seat + n) % 4;
   function unseenCards(v) {
@@ -1168,7 +1297,13 @@
     }
     return out;
   }
-  function deal(pool, sizes, void_, rng) {
+  function cardStrength(c, call) {
+    const dir = call?.direction ?? "high";
+    const d = Math.min(distanceFromAce(c.rank, dir), 7);
+    const base = (7 - d) / 7;
+    return call?.trump && c.suit === call.trump ? Math.min(1, base + 0.35) : base;
+  }
+  function deal(pool, sizes, void_, rng, kept, call) {
     const seats = Object.keys(sizes).map(Number);
     const cards = pool.slice();
     for (let i = cards.length - 1;i > 0; i--) {
@@ -1181,6 +1316,25 @@
     const order = seats.slice().sort((a, b) => void_[b].size - void_[a].size);
     for (const s of order) {
       for (let n = 0;n < sizes[s]; n++) {
+        if (INFER && kept) {
+          const lean = INFER * (kept[s] - 0.5) * 2;
+          if (lean !== 0 && rng() < Math.abs(lean)) {
+            let bestI = -1, bestV = -Infinity;
+            for (let i = 0;i < cards.length; i++) {
+              if (void_[s].has(cards[i].suit))
+                continue;
+              const v = cardStrength(cards[i], call ?? null) * (lean > 0 ? 1 : -1);
+              if (v > bestV) {
+                bestV = v;
+                bestI = i;
+              }
+            }
+            if (bestI >= 0) {
+              out[s].push(cards.splice(bestI, 1)[0]);
+              continue;
+            }
+          }
+        }
         const idx = cards.findIndex((c) => !void_[s].has(c.suit));
         if (idx < 0)
           return null;
@@ -1191,7 +1345,7 @@
   }
   function rollout(v, hands, first, rng) {
     const call = v.call;
-    const agents = [0, 1, 2, 3].map((s) => advancedAgent({ seat: s }));
+    const agents = [0, 1, 2, 3].map((s) => advancedAgent({ seat: s, weights: LEGACY }));
     const won = [0, 0];
     for (const t of v.history) {
       const r = resolveTrick(t.plays, call);
@@ -1228,7 +1382,8 @@
           led,
           trickNo,
           history,
-          scores: v.scores
+          scores: v.scores,
+          discards: v.discards ?? [0, 0, 0, 0]
         };
         let card;
         try {
@@ -1296,7 +1451,8 @@
       if (s !== seat)
         hands[s] = pool.slice(next, next += HAND_SIZE);
     const contract = call === "auto" ? decideCall(hands[bidWinner], bid) : call;
-    const agents = [0, 1, 2, 3].map((s) => advancedAgent({ seat: s, target }));
+    const agents = [0, 1, 2, 3].map((s) => advancedAgent({ seat: s, target, weights: LEGACY }));
+    const simDiscards = [0, 0, 0, 0];
     const view = (s, extra = {}) => ({
       seat: s,
       hand: hands[s],
@@ -1308,6 +1464,7 @@
       trickNo: 0,
       history: [],
       scores,
+      discards: simDiscards.slice(),
       ...extra
     });
     for (let i = 0;i < 4; i++) {
@@ -1320,6 +1477,7 @@
         toss = [];
       }
       const keepers = hands[s].filter((c) => !toss.some((x) => key(x) === key(c)));
+      simDiscards[s] = HAND_SIZE - keepers.length;
       hands[s] = keepers.concat(pool.slice(next, next += HAND_SIZE - keepers.length));
     }
     const won = [0, 0];
@@ -1367,7 +1525,8 @@
   }
   function expertAgent(opts) {
     const base = advancedAgent({ seat: opts.seat, target: opts.target });
-    const samples = opts.samples ?? 200;
+    const envSamples = Number(typeof process !== "undefined" && process.env?.FN_SAMPLES || 0);
+    const samples = opts.samples ?? (envSamples > 0 ? envSamples : 200);
     const target = opts.target ?? TARGET_START;
     const master = opts.master === true;
     const handSamples = Math.max(12, Math.round(samples / 8));
@@ -1383,15 +1542,16 @@
     return {
       bid(v, highest, forced, s) {
         const fallback = base.bid(v, highest, forced, s);
-        if (!master || forced)
+        if (!master || forced || !SEARCH_BID)
           return fallback;
         const rng = nextRng();
+        const seed2 = Math.floor(rng() * 2 ** 32);
         const mine = decideCall(v.hand, Math.max(1, highest + 1));
         const theirSeat = s.partnerWinning ? (v.seat + 2) % 4 : (v.seat + 1) % 4;
-        const passValue = highest === 0 ? worth(v, "auto", 1, theirSeat, rng) : worth(v, "auto", highest, theirSeat, rng);
+        const passValue = highest === 0 ? worth(v, "auto", 1, theirSeat, rngFrom(seed2)) : worth(v, "auto", highest, theirSeat, rngFrom(seed2));
         let best = { bid: null, value: passValue };
         for (let b = highest + 1;b <= Math.min(highest + 3, 7); b++) {
-          const value = worth(v, mine, b, v.seat, rng);
+          const value = worth(v, mine, b, v.seat, rngFrom(seed2));
           if (value > best.value + BID_MARGIN)
             best = { bid: b, value };
         }
@@ -1400,7 +1560,7 @@
         return best.bid;
       },
       call(v) {
-        if (!master)
+        if (!master || !SEARCH_CALL)
           return base.call(v);
         const rng = nextRng();
         const bid = v.bid ?? 1;
@@ -1426,15 +1586,21 @@
         const pool = unseenCards(v);
         const sizes = handSizes(v);
         const void_ = voids(v);
+        const keptFrac = {};
+        for (const s of [0, 1, 2, 3]) {
+          keptFrac[s] = (HAND_SIZE - (v.discards?.[s] ?? 0)) / HAND_SIZE;
+        }
         const rng = nextRng();
         const total = legal.map(() => 0);
         let worlds = 0;
         for (let s = 0;s < samples; s++) {
           let hands = null;
-          for (let tries = 0;tries < 4 && !hands; tries++)
-            hands = deal(pool, sizes, void_, rng);
-          if (!hands)
-            hands = deal(pool, sizes, { 0: new Set, 1: new Set, 2: new Set, 3: new Set }, rng);
+          for (let tries = 0;tries < 4 && !hands; tries++) {
+            hands = deal(pool, sizes, void_, rng, keptFrac, v.call);
+          }
+          if (!hands) {
+            hands = deal(pool, sizes, { 0: new Set, 1: new Set, 2: new Set, 3: new Set }, rng, keptFrac, v.call);
+          }
           if (!hands)
             continue;
           worlds++;
@@ -1447,10 +1613,29 @@
         }
         if (!worlds)
           return base.play(v, legal);
-        let best = 0;
-        for (let i = 1;i < legal.length; i++)
-          if (total[i] > total[best])
+        const mem = new Memory;
+        for (const t of v.history)
+          for (const p of t.plays)
+            mem.note(p.card);
+        for (const p of v.trick)
+          mem.note(p.card);
+        const hctx = {
+          view: v,
+          memory: mem,
+          ours: v.bidWinner !== null && v.bidWinner % 2 === v.seat % 2,
+          isBidWinner: v.bidWinner === v.seat
+        };
+        const prior = legal.map((c) => scoreCard(c, legal, hctx));
+        const lo = Math.min(...prior), hi = Math.max(...prior);
+        const span = hi - lo;
+        let best = 0, bestVal = -Infinity;
+        for (let i = 0;i < legal.length; i++) {
+          const val = total[i] / worlds + (span > 0 ? PRIOR * ((prior[i] - lo) / span) : 0);
+          if (val > bestVal) {
+            bestVal = val;
             best = i;
+          }
+        }
         return legal[best];
       }
     };
@@ -1499,7 +1684,8 @@
           view: v,
           memory,
           ours,
-          isBidWinner: v.bidWinner === v.seat
+          isBidWinner: v.bidWinner === v.seat,
+          w: opts.weights
         };
         return choosePlay(legal, ctx);
       }
@@ -1694,6 +1880,9 @@
       s.selected.delete(k);
   }
   function view(seat) {
+    const discards = [0, 0, 0, 0];
+    for (const d of s.draws)
+      discards[d.seat] = d.drew;
     return {
       seat,
       hand: s.hands[seat],
@@ -1704,7 +1893,8 @@
       led: s.led,
       trickNo: s.trickNo,
       history: s.history,
-      scores: s.scores
+      scores: s.scores,
+      discards
     };
   }
   function deal2() {
@@ -1811,7 +2001,7 @@
       });
     }, DISCARD_STEP_MS);
   }
-  function showSwap(seat, n, done) {
+  function showSwap(seat, n, done, cards) {
     if (n === 0) {
       s.swap = undefined;
       render();
@@ -1820,7 +2010,7 @@
     s.swap = { seat, out: n, in: n, phase: "out" };
     render();
     pending = setTimeout(() => {
-      s.swap = { seat, out: n, in: n, phase: "in" };
+      s.swap = { seat, out: n, in: n, phase: "in", cards };
       render();
       pending = setTimeout(() => {
         s.swap = undefined;
@@ -1835,14 +2025,15 @@
     trimSelection();
     const keep = s.hands[HUMAN].filter((c) => !s.selected.has(key2(c)));
     const need = HAND_SIZE - keep.length;
-    s.hands[HUMAN] = keep.concat(draw(need));
+    const drawn = draw(need);
+    s.hands[HUMAN] = keep.concat(drawn);
     s.draws.push({ seat: HUMAN, drew: need });
     s.selected.clear();
     s.log = need === 0 ? "You stand pat" : `You discarded ${need}`;
     s.busy = true;
     showSwap(HUMAN, need, () => {
       pending = setTimeout(nextDiscard, DISCARD_STEP_MS * 0.35);
-    });
+    }, drawn);
   }
   function beginPlay() {
     s.phase = "play";
@@ -2039,6 +2230,14 @@
     }
     return out;
   }
+  function sortHand(cards, call) {
+    if (!call) {
+      return cards.slice().sort((a, b) => a.suit === b.suit ? a.rank - b.rank : SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit));
+    }
+    const dir = call.direction;
+    const suitRank = (su) => call.trump !== null && su === call.trump ? -1 : SUITS.indexOf(su);
+    return cards.slice().sort((a, b) => a.suit === b.suit ? power(b.rank, dir) - power(a.rank, dir) : suitRank(a.suit) - suitRank(b.suit));
+  }
   var DIR_OPTS = [["high", "High"], ["low", "Low"]];
   var SUIT_OPTS = [
     ["S", "♠ Spades"],
@@ -2160,10 +2359,13 @@
           sn.slot.appendChild(cn);
         } else if (swap) {
           const pile = el("div", `swap ${swap.phase}`);
-          for (let i = 0;i < (swap.phase === "out" ? swap.out : swap.in); i++) {
-            const b = el("div", "back");
-            b.style.animationDelay = `${i * 70}ms`;
-            pile.appendChild(b);
+          const n = swap.phase === "out" ? swap.out : swap.in;
+          for (let i = 0;i < n; i++) {
+            const face = swap.phase === "in" ? swap.cards?.[i] : undefined;
+            const node = face ? cardNode(face, { mini: true }) : el("div", "back");
+            node.classList.add("dealt");
+            node.style.animationDelay = `${i * 190}ms`;
+            pile.appendChild(node);
           }
           sn.slot.appendChild(pile);
           sn.slot.appendChild(el("div", "swapn", `${swap.phase === "out" ? "−" : "+"}${swap.out}`));
@@ -2214,7 +2416,7 @@
     const hand = $("hand");
     const myTurn = s.phase === "play" && !s.busy && (s.leader + s.trick.length) % 4 === HUMAN;
     const legal = myTurn ? legalPlays(s.hands[HUMAN], s.led) : [];
-    const sorted = iAmTroy() ? scatter(s.hands[HUMAN]) : s.hands[HUMAN].slice().sort((a2, b) => a2.suit === b.suit ? a2.rank - b.rank : SUITS.indexOf(a2.suit) - SUITS.indexOf(b.suit));
+    const sorted = iAmTroy() && !s.call ? scatter(s.hands[HUMAN]) : sortHand(s.hands[HUMAN], s.call);
     const top = Math.ceil(sorted.length / 2);
     const rows = [sorted.slice(0, top), sorted.slice(top)];
     const live = new Set(sorted.map(key2));

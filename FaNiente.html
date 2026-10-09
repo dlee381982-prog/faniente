@@ -825,6 +825,7 @@
     return v === undefined || v === "" ? true : v !== "0";
   })();
   var BID_BOOST = envNum("FN_BID_BOOST", 0);
+  var HUMAN_BID = envNum("FN_HUMAN_BID", 2);
   var envN = (k, d) => {
     const v = envStr(k);
     return v === undefined || v === "" ? d : Number(v);
@@ -950,6 +951,30 @@
   }
   var isSecond = (rank, dir) => distanceFromAce(rank, dir) === 1;
   function decideBid(hand, ctx) {
+    const r = decideBidLadder(hand, ctx);
+    const mode = ctx.humanBid ?? HUMAN_BID;
+    if (!mode || ctx.forced)
+      return r;
+    const max = maxWilling(hand, ctx) + BID_BOOST;
+    const groups = bySuit(hand);
+    const longest = Math.max(...SUITS.map((x) => groups[x].length));
+    const aces = aceCount(hand);
+    if (mode >= 2 && r === null && ctx.position === 3 && ctx.highest === 3 && !ctx.partnerWinning) {
+      if (mode >= 3 ? aces >= 1 && max >= 3 : aces >= 1 && longest >= 4 && max >= 3)
+        return 4;
+    }
+    if (mode >= 3 && r === null && ctx.position <= 2 && ctx.highest < 3 && !ctx.partnerWinning) {
+      if (aces >= 1 || longest >= 4)
+        return 3;
+    }
+    if (r !== null && r <= 2) {
+      if (max >= 3 && ctx.highest < 3)
+        return 3;
+      return null;
+    }
+    return r;
+  }
+  function decideBidLadder(hand, ctx) {
     if (ctx.forced)
       return 1;
     let max = maxWilling(hand, ctx) + BID_BOOST;
@@ -999,6 +1024,7 @@
       MIN_RAISE,
       TAKEOVER: RAISE_ON_RUN,
       BID_BOOST,
+      HUMAN_BID,
       MODEL_MARGIN,
       MODEL_RANK,
       MODEL_CAP
@@ -1083,6 +1109,18 @@
     }
     return s;
   }
+  var HUMAN_DISC = envBool("FN_HUMAN_DISC", true);
+  function discardConfig() {
+    return { HUMAN_DISC };
+  }
+  function humanDiscards(hand, ctx, defKeep = 0) {
+    if (ctx.call.trump === null)
+      return chooseDiscards(hand, ctx);
+    const dir = ctx.call.direction;
+    const keepTop = defKeep > 0 && !ctx.ours;
+    const throwAces = defKeep < 0 && !ctx.ours;
+    return hand.filter((c) => c.suit !== ctx.call.trump && (c.rank !== 1 || throwAces) && !(keepTop && isTopPower(c.rank, dir)));
+  }
   function chooseDiscards(hand, ctx) {
     const threshold = ctx.ours ? 20 : 15;
     const scored = hand.map((c) => ({ c, s: cardScore(c, hand, ctx) })).sort((a, b) => a.s - b.s);
@@ -1110,6 +1148,7 @@
     leadTopOdd: envN2("FN_LTO", 0),
     leadOddTrump: envN2("FN_LOT", 22),
     trumpAceCut: envN2("FN_TAC", 20),
+    aceTrick1: envN2("FN_ACE1", 0),
     flushAce: envN2("FN_FLUSH", -1),
     aceFirst: envN2("FN_ACEFIRST", 0),
     denyAlways: envN2("FN_DENY", 1),
@@ -1139,6 +1178,7 @@
     leadTopOdd: 0,
     leadOddTrump: 0,
     trumpAceCut: 0,
+    aceTrick1: 0,
     flushAce: 1,
     aceFirst: 0,
     denyAlways: 0,
@@ -1246,7 +1286,7 @@
       const trumpAceOut = trump !== null && !ctx.memory.played(trump, 1) && !hand.some((x) => x.suit === trump && x.rank === 1);
       if (c.rank === 1) {
         if (trickNo <= 3)
-          s += 25;
+          s += 25 - (trickNo === 1 ? W.aceTrick1 : 0);
         if (!isTrump)
           s += 8;
         if (isTrump && ctx.isBidWinner) {
@@ -1447,7 +1487,8 @@
           target: opts.target ?? 21,
           noPartnerRaise: opts.noPartnerRaise,
           raiseMinAces: opts.raiseMinAces,
-          raiseOnRun: opts.raiseOnRun
+          raiseOnRun: opts.raiseOnRun,
+          humanBid: opts.humanBid
         };
         return decideBid(v.hand, ctx);
       },
@@ -1456,7 +1497,7 @@
       },
       discard(v) {
         const ours = v.bidWinner !== null && v.bidWinner % 2 === v.seat % 2;
-        return chooseDiscards(v.hand, { call: v.call, ours });
+        return opts.humanDisc ?? HUMAN_DISC ? humanDiscards(v.hand, { call: v.call, ours }, opts.defKeep ?? 0) : chooseDiscards(v.hand, { call: v.call, ours });
       },
       play(v, legal) {
         sync(v);
@@ -1493,6 +1534,9 @@
   })();
   var PRIOR = envNum("FN_PRIOR", 0.6);
   var INFER = envNum("FN_INFER", 0.5);
+  var OWN_DISC = envBool("FN_OWN_DISC", true);
+  var KEEP_INFER = envBool("FN_KEEP_INFER", true);
+  var DEF_NO_TRUMP = envNum("FN_DEF_NOTRUMP", 1);
   var key = (c) => `${c.suit}${c.rank}`;
   var rotate = (seat, n = 1) => (seat + n) % 4;
   function unseenCards(v) {
@@ -1576,6 +1620,57 @@
             }
           }
         }
+        const idx = cards.findIndex((c) => !void_[s].has(c.suit));
+        if (idx < 0)
+          return null;
+        out[s].push(cards.splice(idx, 1)[0]);
+      }
+    }
+    return out;
+  }
+  function keptNeed(v, sizes) {
+    const trump = v.call?.trump ?? null;
+    if (trump === null || !v.discards)
+      return null;
+    const isT = (c) => c.suit === trump || c.rank === 1;
+    const played = { 0: 0, 1: 0, 2: 0, 3: 0 };
+    for (const t of v.history)
+      for (const p of t.plays)
+        if (isT(p.card))
+          played[p.seat]++;
+    for (const p of v.trick)
+      if (isT(p.card))
+        played[p.seat]++;
+    const out = {};
+    for (const s of Object.keys(sizes).map(Number)) {
+      const kept = HAND_SIZE - (v.discards[s] ?? 0);
+      out[s] = Math.max(0, Math.min(sizes[s], kept - played[s]));
+    }
+    return out;
+  }
+  function dealKept(pool, sizes, void_, rng, need, trump) {
+    const isT = (c) => c.suit === trump || c.rank === 1;
+    const seats = Object.keys(sizes).map(Number);
+    const cards = pool.slice();
+    for (let i = cards.length - 1;i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [cards[i], cards[j]] = [cards[j], cards[i]];
+    }
+    const out = {};
+    for (const s of seats)
+      out[s] = [];
+    const order = seats.slice().sort((a, b) => need[b] - need[a] || void_[b].size - void_[a].size);
+    for (const s of order) {
+      for (let n = 0;n < need[s]; n++) {
+        const idx = cards.findIndex((c) => isT(c) && !void_[s].has(c.suit));
+        if (idx < 0)
+          return null;
+        out[s].push(cards.splice(idx, 1)[0]);
+      }
+    }
+    const fill = seats.slice().sort((a, b) => void_[b].size - void_[a].size);
+    for (const s of fill) {
+      while (out[s].length < sizes[s]) {
         const idx = cards.findIndex((c) => !void_[s].has(c.suit));
         if (idx < 0)
           return null;
@@ -1784,6 +1879,18 @@
     const keep = legal.filter((c) => c.suit !== trump || all && long && isTopPower(c.rank, dir));
     return keep.length > 0 ? keep : legal;
   }
+  function pruneDefTrump(v, legal, mode) {
+    if (!mode)
+      return legal;
+    const trump = v.call?.trump ?? null;
+    if (trump === null || v.trick.length !== 0)
+      return legal;
+    if (v.bidWinner == null || v.bidWinner % 2 === v.seat % 2)
+      return legal;
+    const dir = v.call.direction;
+    const keep = legal.filter((c) => c.suit !== trump || mode === 2 && isTopPower(c.rank, dir));
+    return keep.length > 0 ? keep : legal;
+  }
   function pruneOverkill(v, legal, on) {
     if (!on)
       return legal;
@@ -1912,15 +2019,18 @@
       INFER,
       BID_MARGIN,
       TIE_EPS,
+      OWN_DISC,
+      KEEP_INFER,
       NO_BLIND_TRUMP,
       BLIND_TRUMP_ALL,
       NO_OVERKILL,
       NO_PARITY_GIFT,
-      EVEN_ON_PARTNER
+      EVEN_ON_PARTNER,
+      DEF_NO_TRUMP
     };
   }
   function expertAgent(opts) {
-    const base = advancedAgent({ seat: opts.seat, target: opts.target, weights: opts.weights });
+    const base = advancedAgent({ seat: opts.seat, target: opts.target, weights: opts.weights, humanBid: opts.humanBid, humanDisc: opts.humanDisc, defKeep: opts.defKeep });
     const envSamples = envNum("FN_SAMPLES", 0);
     const samples = opts.samples ?? (envSamples > 0 ? envSamples : 200);
     const target = opts.target ?? TARGET_START;
@@ -1932,6 +2042,9 @@
     const evenOnPartner = opts.evenOnPartner ?? EVEN_ON_PARTNER;
     const searchCall = opts.searchCall ?? SEARCH_CALL;
     const playoutW = opts.playoutWeights ?? LEGACY;
+    const ownDisc = opts.ownDisc ?? OWN_DISC;
+    const keepInfer = opts.keepInfer ?? KEEP_INFER;
+    const defNoTrump = opts.defNoTrump ?? DEF_NO_TRUMP;
     const handSamples = Math.max(12, Math.round(samples / 8));
     const callSamples = opts.callSamples ?? envNum("FN_CALL_SAMPLES", 150);
     let seed = 2654435769 ^ opts.seat * 2654435761;
@@ -2010,14 +2123,17 @@
         if (!v.call)
           return base.play(v, legal);
         legal = pruneLeads(v, legal, noBlindTrump, blindTrumpAll);
+        legal = pruneDefTrump(v, legal, defNoTrump);
         legal = pruneOverkill(v, legal, noOverkill);
         legal = pruneParityGift(v, legal, noParityGift);
         legal = pruneOddOnPartner(v, legal, evenOnPartner);
         if (legal.length === 1)
           return legal[0];
-        const pool = unseenCards(v);
+        const dead = new Set(ownDisc ? (v.thrown ?? []).map(key) : []);
+        const pool = unseenCards(v).filter((c) => !dead.has(key(c)));
         const sizes = handSizes(v);
         const void_ = voids(v);
+        const need = keepInfer ? keptNeed(v, sizes) : null;
         const keptFrac = {};
         for (const s of [0, 1, 2, 3]) {
           keptFrac[s] = (HAND_SIZE - (v.discards?.[s] ?? 0)) / HAND_SIZE;
@@ -2027,8 +2143,13 @@
         let worlds = 0;
         for (let s = 0;s < samples; s++) {
           let hands = null;
+          if (need) {
+            for (let tries = 0;tries < 4 && !hands; tries++) {
+              hands = dealKept(pool, sizes, void_, rng, need, v.call.trump);
+            }
+          }
           for (let tries = 0;tries < 4 && !hands; tries++) {
-            hands = deal(pool, sizes, void_, rng, keptFrac, v.call);
+            hands = deal(pool, sizes, void_, rng, need ? undefined : keptFrac, v.call);
           }
           if (!hands) {
             hands = deal(pool, sizes, { 0: new Set, 1: new Set, 2: new Set, 3: new Set }, rng, keptFrac, v.call);
@@ -2051,6 +2172,9 @@
             mem.note(p.card);
         for (const p of v.trick)
           mem.note(p.card);
+        if (ownDisc)
+          for (const c of v.thrown ?? [])
+            mem.note(c);
         const hctx = {
           view: v,
           memory: mem,
@@ -2089,7 +2213,7 @@
 
   // src/ai/config.ts
   function runtimeConfig() {
-    return { expert: expertConfig(), play: { ...TUNE }, bid: bidConfig(), call: callConfig() };
+    return { expert: expertConfig(), play: { ...TUNE }, bid: bidConfig(), call: callConfig(), discard: discardConfig() };
   }
 
   // src/web/journal.ts
@@ -2375,6 +2499,7 @@
     const discards = [0, 0, 0, 0];
     for (const d of s.draws)
       discards[d.seat] = d.drew;
+    const thrown = s.draws.find((d) => d.seat === seat)?.thrown ?? [];
     return {
       seat,
       hand: s.hands[seat],
@@ -2386,7 +2511,8 @@
       trickNo: s.trickNo,
       history: s.history,
       scores: s.scores,
-      discards
+      discards,
+      thrown
     };
   }
   function deal2() {
@@ -2487,8 +2613,9 @@
       const toss = agents()[seat].discard(view(seat)).slice(0, stock());
       const keep = s.hands[seat].filter((c) => !toss.some((t) => key2(t) === key2(c)));
       const need = HAND_SIZE - keep.length;
+      const thrown = s.hands[seat].filter((c) => !keep.includes(c));
       s.hands[seat] = keep.concat(draw(need));
-      s.draws.push({ seat, drew: need });
+      s.draws.push({ seat, drew: need, thrown });
       s.log = need === 0 ? `${NAME[seat]} stands pat` : `${NAME[seat]} discarded ${need}`;
       showSwap(seat, need, () => {
         pending = setTimeout(nextDiscard, DISCARD_STEP_MS * 0.35);
